@@ -37,7 +37,6 @@ const fixtureSettings: RunnerSettings = {
   file_access: { configured_roots: [], default_roots: ["/Users/fixture"], effective_roots: ["/Users/fixture"], using_default_roots: true, allow_cwd_anywhere: false },
 };
 const refreshOperation = { id: "refresh", kind: "runtime_refresh", phase: "running", started_at_ms: 1, cancellable: false } as const;
-const busyError = { code: "desktop_state_unavailable", message: "The core is being refreshed.", next_action: "Refresh" };
 let state: DesktopState, settings: RunnerSettings;
 const wrap = (child: React.ReactNode) => <LocaleProvider><DesktopMantineProvider>{child}</DesktopMantineProvider></LocaleProvider>;
 function deferred<T>() {
@@ -76,21 +75,16 @@ describe("Settings observation and action ownership", () => {
     expect(onState).not.toHaveBeenCalled();
   });
 
-  it("recovers file access when a first settings read races with runtime refresh", async () => {
-    vi.useFakeTimers();
+  it("defers file access read until an active runtime refresh finishes", async () => {
     state = { ...state, current_operation: refreshOperation };
-    api.runnerSettings.mockRejectedValueOnce(busyError);
     const view = render(wrap(<SettingsPanel state={state} onState={vi.fn()} initialSection="access" />));
     await act(async () => {});
+    expect(api.runnerSettings).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     state = { ...state, current_operation: null };
     view.rerender(wrap(<SettingsPanel state={state} onState={vi.fn()} initialSection="access" />));
-    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
-    expect(api.runnerSettings).toHaveBeenCalledTimes(2);
-    expect(screen.getByRole("button", { name: "Authorize folder" })).toBeEnabled();
-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Authorize folder" })).toBeEnabled());    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
-
   it("shows a failed settings read and allows recovery without leaving the page", async () => {
     api.runnerSettings.mockRejectedValueOnce({ code: "runner_settings_read_failed", message: "Fixture settings could not be read", next_action: "Refresh" });
     render(wrap(<SettingsPanel state={state} onState={vi.fn()} initialSection="access" />));
@@ -104,25 +98,20 @@ describe("Settings observation and action ownership", () => {
     expect(api.runnerSettings).toHaveBeenCalledTimes(2);
   });
 
-  it("retries a bounded-out settings observation when the published runtime refresh ends", async () => {
+  it("does not show Desktop is busy during a long runtime refresh", async () => {
     vi.useFakeTimers();
     state = { ...state, current_operation: refreshOperation };
-    api.runnerSettings.mockRejectedValue(busyError);
     const view = render(wrap(<SettingsPanel state={state} onState={vi.fn()} initialSection="access" />));
-    await act(async () => { await vi.advanceTimersByTimeAsync(1_500); });
-    expect(screen.getByRole("alert")).toHaveTextContent("desktop_state_unavailable");
-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
-    const attempts = api.runnerSettings.mock.calls.length;
-    expect(attempts).toBeGreaterThan(1);
-    api.runnerSettings.mockResolvedValue(settings);
+    await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
+    expect(api.runnerSettings).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     state = { ...state, current_operation: null };
     view.rerender(wrap(<SettingsPanel state={state} onState={vi.fn()} initialSection="access" />));
     await act(async () => {});
-    expect(api.runnerSettings).toHaveBeenCalledTimes(attempts + 1);
+    expect(api.runnerSettings).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("button", { name: "Authorize folder" })).toBeEnabled();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
-
   it("does not let a slow old settings read replace the newly selected Runner", async () => {
     const old = deferred<RunnerSettings>();
     api.runnerSettings.mockReturnValueOnce(old.promise);
