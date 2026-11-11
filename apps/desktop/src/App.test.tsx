@@ -395,13 +395,9 @@ beforeEach(() => {
     expect(window.localStorage.getItem("webcodex.desktop.appearance.v1")).toBe("dark");
   });
 
-  it.each([
-    ["manual", "resolve"], ["manual", "reject"],
-    ["automatic", "resolve"], ["automatic", "reject"],
-  ] as const)("suspends workspace polling during %s runtime refresh (%s)", async (trigger, outcome) => {
-    const selected = { ...readyState, persistent_environment: trigger === "automatic" ? "fixture-environment" : null };
+  it.each(["resolve", "reject"] as const)("suspends workspace polling during manual runtime refresh (%s)", async outcome => {
+    const selected = { ...readyState, persistent_environment: null };
     api.getState.mockResolvedValue(selected);
-    if (trigger === "automatic") api.refresh.mockResolvedValueOnce(selected);
     const runtime = deferred<DesktopState>();
     let refreshing = false;
     let inventoryUpdated = false;
@@ -420,11 +416,9 @@ beforeEach(() => {
     try {
       await act(async () => {});
       expect(screen.getByText("1 · 管理工作目录")).toBeInTheDocument();
-      // Isolate runtime observation from the independent 30-second activity observer.
       fireEvent.blur(window);
       const before = workspace.invoke.mock.calls.length;
-      if (trigger === "manual") fireEvent.click(screen.getByRole("button", { name: "刷新" }));
-      else await act(async () => { await vi.advanceTimersByTimeAsync(1_500); });
+      fireEvent.click(screen.getByRole("button", { name: "刷新" }));
       await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
       expect(workspace.invoke.mock.calls.length).toBe(before);
       expect(screen.getByText("1 · 管理工作目录")).toBeInTheDocument();
@@ -440,39 +434,69 @@ beforeEach(() => {
       expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("概览");
       expect(screen.getByText("2 · 管理工作目录")).toBeInTheDocument();
       expect(screen.queryByText("暂时无法刷新，请检查连接后重试。")).not.toBeInTheDocument();
-      if (trigger === "manual") {
-        await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
-        expect(count()).toBe(3);
-      }
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+      expect(count()).toBe(3);
     } finally {
       view.unmount();
       vi.useRealTimers();
     }
   });
 
-  it("does not accelerate Workspace polling across repeated automatic runtime observations", async () => {
+  it("polls persistent Desktop state without admitting repeated refresh operations", async () => {
     const selected = { ...readyState, persistent_environment: "fixture-environment" };
     api.getState.mockResolvedValue(selected);
     api.refresh.mockResolvedValueOnce(selected);
-    api.refresh.mockImplementation(() => new Promise(resolve => {
-      window.setTimeout(() => resolve(selected), 100);
-    }));
     vi.useFakeTimers();
     const view = renderApp();
     try {
       await act(async () => {});
       fireEvent.blur(window);
       const count = () => workspace.invoke.mock.calls.filter(([, args]) => args.request.kind === "overview").length;
+      const observations = api.getState.mock.calls.length;
       expect(count()).toBe(1);
       await act(async () => { await vi.advanceTimersByTimeAsync(6_000); });
-      expect(api.refresh.mock.calls.length).toBeGreaterThan(2);
+      expect(api.refresh).toHaveBeenCalledTimes(1);
+      expect(api.getState.mock.calls.length).toBeGreaterThan(observations);
       expect(count()).toBe(1);
       await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
       expect(count()).toBeGreaterThanOrEqual(2);
+      expect(api.refresh).toHaveBeenCalledTimes(1);
     } finally {
       view.unmount();
       vi.useRealTimers();
     }
+  });
+
+  it("reconciles persistent runtime after the Desktop regains focus", async () => {
+    const selected = { ...readyState, persistent_environment: "fixture-environment" };
+    api.getState.mockResolvedValue(selected);
+    api.refresh.mockResolvedValue(selected);
+    const view = renderApp();
+    try {
+      await waitFor(() => expect(api.refresh).toHaveBeenCalledTimes(1));
+      fireEvent.blur(window);
+      fireEvent.focus(window);
+      await waitFor(() => expect(api.refresh).toHaveBeenCalledTimes(2));
+      // Repeated focus notifications without an intervening blur cannot
+      // admit another exclusive refresh operation.
+      fireEvent.focus(window);
+      expect(api.refresh).toHaveBeenCalledTimes(2);
+    } finally {
+      view.unmount();
+    }
+  });
+
+  it("observes the active operation when initial persistent refresh collides with it", async () => {
+    const selected = { ...readyState, persistent_environment: "fixture-environment" };
+    api.getState.mockResolvedValueOnce(selected).mockResolvedValueOnce(localSetupOperationState());
+    api.refresh.mockRejectedValueOnce({
+      code: "desktop_operation_busy", message: "Another Desktop operation is still running",
+      next_action: "Wait for the current operation to finish.",
+    });
+    renderApp();
+    await waitFor(() => expect(api.getState).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("status", { name: "当前 Desktop 操作" })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("treats a Refresh collision with an already running Desktop operation as state observation", async () => {

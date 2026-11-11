@@ -14,12 +14,12 @@ export function useDesktopWorkspace() {
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
   const [navigation, setNavigation] = useState<Navigation>("home");
   const [refreshing, setRefreshing] = useState(false);
-  const [runtimeObservations, setRuntimeObservations] = useState(0);
   const [error, setError] = useState<DesktopError | null>(null);
   const [cancelSubmittingId, setCancelSubmittingId] = useState<string | null>(null);
   const [showSetup, setShowSetup] = useState(false);
   const [startupAttempt, setStartupAttempt] = useState(0);
   const [windowFocused, setWindowFocused] = useState(true);
+  const focusReconcilePending = useRef(false);
   const stateVersionRef = useRef(0);
   const mainRef = useRef<HTMLElement>(null);
   const hasCurrentOperation = Boolean(state?.current_operation);
@@ -83,6 +83,43 @@ export function useDesktopWorkspace() {
     setError((current) => current?.code === "runner_offline" && next.readiness.runner === "ready" ? null : current);
   }, []);
 
+  // A foreground return is an explicit observation boundary. Refresh persistent
+  // service status once on refocus, not on every 1.5s UI poll: each refresh
+  // acquires an exclusive Desktop operation and can block user actions.
+  useEffect(() => {
+    if (!windowFocused) {
+      focusReconcilePending.current = true;
+      return;
+    }
+    if (refreshing) {
+      // An explicit or startup reconciliation already updates this state.
+      focusReconcilePending.current = false;
+      return;
+    }
+    if (!focusReconcilePending.current || !state?.persistent_environment || hasCurrentOperation) return;
+    focusReconcilePending.current = false;
+    let cancelled = false;
+    const observedVersion = stateVersionRef.current;
+    void (async () => {
+      try {
+        const next = await desktopApi.refresh();
+        if (!cancelled && stateVersionRef.current === observedVersion) commitState(next);
+      } catch (value) {
+        // An operation that started between our idle snapshot and this
+        // refresh owns the slot. Only observe it; do not show a race as an error.
+        if (normalizeDesktopError(value).code === "desktop_operation_busy") {
+          try {
+            const next = await desktopApi.getState();
+            if (!cancelled && stateVersionRef.current === observedVersion) commitState(next);
+          } catch { /* best effort */ }
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [windowFocused, refreshing, hasCurrentOperation, state?.persistent_environment, commitState]);
+
+
+
   const observeFailedOperation = useCallback(async (value: unknown, current: () => boolean = () => true) => {
     if (!current()) return;
     setError(normalizeDesktopError(value));
@@ -142,7 +179,16 @@ export function useDesktopWorkspace() {
             const observed = await desktopApi.refresh();
             if (!cancelled) commitState(observed);
           } catch (value) {
-            if (!cancelled) setError(normalizeDesktopError(value));
+            if (!cancelled) {
+              const failure = normalizeDesktopError(value);
+              if (failure.code === "desktop_operation_busy") {
+                // An operation admitted after our initial snapshot owns the slot.
+                // Observe it without starting another mutation or showing an error.
+                try { commitState(await desktopApi.getState()); } catch { /* best effort */ }
+              } else {
+                setError(failure);
+              }
+            }
           } finally {
             if (!cancelled) setRefreshing(false);
           }
@@ -208,14 +254,12 @@ export function useDesktopWorkspace() {
       timeoutId = window.setTimeout(() => {
         void (async () => {
           const observedVersion = stateVersionRef.current;
-          const refreshRuntime = Boolean(state?.persistent_environment && !hasCurrentOperation && !refreshing);
-          // Keep this separate from refreshing: changing that effect dependency
-          // would cancel this observation before it can commit its result.
-          if (refreshRuntime) setRuntimeObservations(count => count + 1);
           try {
-            const next = refreshRuntime
-              ? await desktopApi.refresh()
-              : await desktopApi.getState();
+            // Automatic UI polling must remain passive: refresh_runtime_status
+            // admits an exclusive Desktop operation and could reject user actions.
+            // Native observation while the window is closed and the explicit
+            // Refresh button still perform active status reconciliation.
+            const next = await desktopApi.getState();
             if (!cancelled && stateVersionRef.current === observedVersion) {
               commitState(next);
             }
@@ -223,7 +267,6 @@ export function useDesktopWorkspace() {
             // Observation is best-effort. A transient invoke failure must not
             // create an error storm or a second concurrent observer.
           } finally {
-            if (refreshRuntime) setRuntimeObservations(count => count - 1);
             if (!cancelled) scheduleObservation();
           }
         })();
@@ -235,8 +278,7 @@ export function useDesktopWorkspace() {
       cancelled = true;
       if (timeoutId !== undefined) window.clearTimeout(timeoutId);
     };
-  }, [commitState, hasCurrentOperation, hasLoadedState, refreshing, state?.persistent_environment]);
-
+  }, [commitState, hasCurrentOperation, hasLoadedState, refreshing]);
   useEffect(() => {
     if (!shouldObserveChatgptActivity) return;
 
@@ -329,5 +371,5 @@ export function useDesktopWorkspace() {
     }
   };
 
-  return { state, activity, navigation, setNavigation, refreshing: refreshing || runtimeObservations > 0, preserveWorkspacePollDeadline: runtimeObservations > 0 && !refreshing, error, setError, cancelSubmittingId, showSetup, setShowSetup, setStartupAttempt, mainRef, commitState, openSetup, refresh, resumeRuntime, cancelCurrentOperation, runStateOperation };
+  return { state, activity, navigation, setNavigation, refreshing, error, setError, cancelSubmittingId, showSetup, setShowSetup, setStartupAttempt, mainRef, commitState, openSetup, refresh, resumeRuntime, cancelCurrentOperation, runStateOperation };
 }

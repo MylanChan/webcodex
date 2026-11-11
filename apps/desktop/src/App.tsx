@@ -38,7 +38,7 @@ function DesktopApp() {
   const [completionEnvironment, setCompletionEnvironment] = useState<string | null>(null);
   const [extensionTab, setExtensionTab] = useState<ExtensionTab>();
   const [settingsSection, setSettingsSection] = useState<"diagnostics" | "runtime" | "network" | "access" | undefined>();
-  const { state, activity, navigation, setNavigation, refreshing, preserveWorkspacePollDeadline, error, setError, cancelSubmittingId, showSetup, setShowSetup, setStartupAttempt, mainRef, commitState, openSetup, refresh, resumeRuntime, cancelCurrentOperation, runStateOperation } = useDesktopWorkspace();
+  const { state, activity, navigation, setNavigation, refreshing, error, setError, cancelSubmittingId, showSetup, setShowSetup, setStartupAttempt, mainRef, commitState, openSetup, refresh, resumeRuntime, cancelCurrentOperation, runStateOperation } = useDesktopWorkspace();
   const updates = useRuntimeUpdates(Boolean(state && !state.current_operation && !state.configuration_issue));
   const openSettings = (section: "diagnostics" | "runtime" | "network" | "access") => { setSettingsSection(section); setNavigation("settings"); };
   if (!state) {
@@ -70,7 +70,7 @@ function DesktopApp() {
   const needsSetup = !state.topology || showSetup;
 
   return (
-    <WorkspaceProvider state={state} suspended={refreshing} preservePollDeadline={preserveWorkspacePollDeadline}><div className="app-shell">
+    <WorkspaceProvider state={state} suspended={refreshing}><div className="app-shell">
       <Sidebar state={state} navigation={navigation} setNavigation={setNavigation} />
 
       <main className="main-content" ref={mainRef} tabIndex={-1}>
