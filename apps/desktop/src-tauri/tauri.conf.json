@@ -5,7 +5,10 @@
   "version": "0.5.0",
   "identifier": "dev.webcodex.desktop",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": {
+      "script": "npm run dev",
+      "cwd": ".."
+    },
     "devUrl": "http://127.0.0.1:1420",
     "beforeBuildCommand": {
       "script": "npm run build",
@@ -25,8 +28,7 @@
         "resizable": true,
         "fullscreen": false,
         "center": true,
-        "visible": false
-      }
+        "visible": false      }
     ],
     "security": {
       "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:",
