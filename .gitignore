@@ -79,3 +79,20 @@ __pycache__/
 /artifacts/mobile-runtime-layout/
 
 /artifacts/window-board/
+
+# Fork-local development tools, caches, and diagnostic logs.
+/.local-tools/
+/.vite/
+*.log
+
+# Desktop/Vite generated artifacts (keep application source tracked).
+/apps/desktop/node_modules/
+/apps/desktop/dist/
+/apps/desktop/src-tauri/target/
+/apps/desktop/.vite/
+/frontend/dist/
+
+# Machine-specific environment overrides; keep any example templates tracked.
+.env.local
+.env.*.local
+*.local.env
